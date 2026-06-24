@@ -24,6 +24,56 @@ const popupPort: Record<string, chrome.runtime.Port> = {};
 // Used only on Firefox, which does not support non persistent background pages.
 const contentScriptRegistrations = {};
 
+const preservedSyncStateKeys = new Set([
+    "userID",
+    "isVip",
+    "minutesSaved",
+    "skipCount",
+    "sponsorTimesContributed",
+    "submissionCountSinceCategories",
+    "showPopupDonationCount",
+    "donateClicked",
+    "payments",
+    "deArrowInstalled",
+    "hideDiscordLaunches",
+    "categoryPillUpdate",
+    "hookUpdate",
+    "showChapterInfoMessage",
+    "shownDeArrowPromotion"
+]);
+
+async function applyManagedStorageConfig(): Promise<void> {
+    let managed: Record<string, unknown> = {};
+    try {
+        if (typeof chrome.storage.managed?.get === "function") {
+            managed = await new Promise<Record<string, unknown>>((resolve) => {
+                chrome.storage.managed.get(null, (items) => {
+                    resolve((items ?? {}) as Record<string, unknown>);
+                });
+            });
+        }
+    } catch {
+        // No managed policy configured, or unsupported browser.
+    }
+
+    if (Object.keys(managed).length === 0) {
+        return;
+    }
+
+    const currentSyncItems = await new Promise<Record<string, unknown>>((resolve) => {
+        chrome.storage.sync.get(null, (items) => {
+            resolve((items ?? {}) as Record<string, unknown>);
+        });
+    });
+    const keysToRemove = Object.keys(currentSyncItems).filter((key) => !preservedSyncStateKeys.has(key));
+
+    if (keysToRemove.length) {
+        await chrome.storage.sync.remove(keysToRemove);
+    }
+
+    await chrome.storage.sync.set(managed);
+}
+
 // Register content script if needed
 utils.wait(() => Config.isReady()).then(function() {
     if (Config.config.supportInvidious) utils.setupExtraSiteContentScripts();
@@ -31,6 +81,10 @@ utils.wait(() => Config.isReady()).then(function() {
 
 setupBackgroundRequestProxy();
 setupTabUpdates(Config);
+
+chrome.runtime.onStartup.addListener(() => {
+    void applyManagedStorageConfig();
+});
 
 chrome.runtime.onMessage.addListener(function (request, sender, callback) {
     switch(request.message) {
@@ -112,6 +166,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
 //add help page on install
 chrome.runtime.onInstalled.addListener(function () {
+    void applyManagedStorageConfig();
+
     // This let's the config sync to run fully before checking.
     // This is required on Firefox
     setTimeout(async () => {
